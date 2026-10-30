@@ -7,12 +7,7 @@ on:
   workflow_call:
 
 permissions:
-  repository-projects: write
-  actions: write
-  checks: write
   contents: write
-  deployments: write
-  id-token: write
 
 jobs:
   reusable-docs-wf:
