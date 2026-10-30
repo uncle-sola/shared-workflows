@@ -19,7 +19,7 @@ jobs:
       - name: Install Terraform Docs
         uses: terraform-docs/gh-actions@main  # Action to generate Terraform documentation
         with:
-          working-dir: ./terraform  # Use the current directory (adjust if needed)
+          working-dir: .  # Use the current directory (adjust if needed)
           output-file: README.md  # Update the README file with generated docs
           output-method: inject  # Inject the documentation into the README
           git-push: "true"
