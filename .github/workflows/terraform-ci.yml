@@ -1,0 +1,110 @@
+name: Terraform CI/CD
+
+on:
+  workflow_call:
+    inputs:
+      terraform-dir:
+        description: Directory containing the Terraform code
+        type: string
+        default: terraform
+      python-version:
+        description: Python version used for the AI review
+        type: string
+        default: "3.12"
+      ai-review-script:
+        description: Path (in the calling repo) to the AI review script. The step is skipped if the file does not exist.
+        type: string
+        default: ai/review_runner.py
+      generate-readme:
+        description: Generate Terraform docs into the README and push them back
+        type: boolean
+        default: true
+    secrets:
+      TF_API_TOKEN:
+        description: Terraform Cloud API token
+        required: false
+      CLAUDE_API_KEY:
+        description: Claude API key used by the AI review
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+
+  call-shared-workflow-readme-generator:
+    if: ${{ inputs.generate-readme }}
+    permissions:
+      contents: write
+    uses: uncle-sola/shared-workflows/.github/workflows/automate-readme.yml@main
+
+  terraform:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.terraform-dir }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Terraform Format Check
+        run: terraform fmt -check
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Install tfsec
+        run: |
+          curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+
+      - name: Run tfsec
+        run: tfsec .
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: ${{ inputs.terraform-dir }}
+          framework: terraform
+
+      - name: Check for AI Review Script
+        id: ai-script
+        run: |
+          if [ -f "${{ inputs.ai-review-script }}" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "AI review script '${{ inputs.ai-review-script }}' not found, skipping AI review."
+          fi
+        working-directory: .
+
+      - name: Setup Python
+        if: steps.ai-script.outputs.exists == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install Python Dependencies
+        if: steps.ai-script.outputs.exists == 'true'
+        run: pip install requests
+        working-directory: .
+
+      - name: Run AI Review
+        if: steps.ai-script.outputs.exists == 'true'
+        env:
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python ${{ inputs.ai-review-script }}
+        working-directory: .
