@@ -5,6 +5,11 @@ name: Generate Terraform Docs
 
 on:
   workflow_call:
+    inputs:
+      working-dir:
+        description: Directory containing the Terraform files
+        type: string
+        default: ./terraform
 
 permissions:
   contents: write
@@ -21,7 +26,7 @@ jobs:
       - name: Install Terraform Docs
         uses: terraform-docs/gh-actions@main  # Action to generate Terraform documentation
         with:
-          working-dir: ./terraform  # Directory containing the Terraform files
+          working-dir: ${{ inputs.working-dir }}  # Directory containing the Terraform files
           output-file: README.md  # Update the README file with generated docs
           output-method: inject  # Inject the documentation into the README
           git-push: "true"
