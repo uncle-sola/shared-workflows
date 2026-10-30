@@ -15,11 +15,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3  # Checkout the repository code
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}  # Check out the real branch (not the PR merge commit) so docs can be pushed
 
       - name: Install Terraform Docs
         uses: terraform-docs/gh-actions@main  # Action to generate Terraform documentation
         with:
-          working-dir: .  # Use the current directory (adjust if needed)
+          working-dir: ./terraform  # Directory containing the Terraform files
           output-file: README.md  # Update the README file with generated docs
           output-method: inject  # Inject the documentation into the README
           git-push: "true"
