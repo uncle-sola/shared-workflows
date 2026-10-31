@@ -33,7 +33,7 @@ permissions:
 
 jobs:
 
-  call-shared-workflow-readme-generator:
+  update-readme:
     if: ${{ inputs.generate-readme }}
     permissions:
       contents: write
