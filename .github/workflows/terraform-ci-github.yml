@@ -1,0 +1,137 @@
+name: Terraform CI/CD
+
+on:
+  workflow_call:
+    inputs:
+      working-dir:
+        description: Directory containing the Terraform code
+        type: string
+        default: ./terraform
+      python-version:
+        description: Python version used for the AI review
+        type: string
+        default: "3.12"
+      ai-review-script:
+        description: Path (in the calling repo) to the AI review script. The step is skipped if the file does not exist.
+        type: string
+        default: ai/review_runner.py
+      generate-readme:
+        description: Generate Terraform docs into the README and push them back
+        type: boolean
+        default: true
+      environment:
+        description: GitHub environment to deploy to
+        type: string
+        required: true    
+    secrets:
+      TF_API_TOKEN:
+        description: Terraform Cloud API token
+        required: false
+      CLAUDE_API_KEY:
+        description: Claude API key used by the AI review
+        required: false
+      ARM_CLIENT_ID:
+        description: Azure service principal client ID (can also be set as a GitHub environment secret)
+        required: false
+      ARM_CLIENT_SECRET:
+        description: Azure service principal client secret (can also be set as a GitHub environment secret)
+        required: false
+      ARM_SUBSCRIPTION_ID:
+        description: Azure subscription ID (can also be set as a GitHub environment secret)
+        required: false
+      ARM_TENANT_ID:
+        description: Azure tenant ID (can also be set as a GitHub environment secret)
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+
+  update-readme:
+    if: ${{ inputs.generate-readme }}
+    permissions:
+      contents: write
+    uses: uncle-sola/shared-workflows/.github/workflows/automate-readme.yml@main
+    with:
+      working-dir: ${{ inputs.working-dir }}
+
+  terraform:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      TF_VAR_environment: ${{ inputs.environment }}
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-dir }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Format Check
+        run: terraform fmt -check
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        env:
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+        run: terraform plan -input=false -no-color -out=tfplan
+
+      - name: Install tfsec
+        run: |
+          curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+
+      - name: Run tfsec
+        run: tfsec .
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: ${{ inputs.working-dir }}
+          framework: terraform
+
+      - name: Check for AI Review Script
+        id: ai-script
+        run: |
+          if [ -f "${{ inputs.ai-review-script }}" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "AI review script '${{ inputs.ai-review-script }}' not found, skipping AI review."
+          fi
+        working-directory: .
+
+      - name: Setup Python
+        if: steps.ai-script.outputs.exists == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install Python Dependencies
+        if: steps.ai-script.outputs.exists == 'true'
+        run: pip install requests
+        working-directory: .
+
+      - name: Run AI Review
+        if: steps.ai-script.outputs.exists == 'true'
+        env:
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python ${{ inputs.ai-review-script }}
+        working-directory: .
