@@ -1,0 +1,135 @@
+name: Tag Release
+
+on:
+  workflow_call:
+    inputs:
+      bump:
+        description: Version bump to apply (auto, major, minor or patch). auto works it out from the commit messages since the last tag
+        type: string
+        default: auto
+      tag-prefix:
+        description: Prefix added to the version in the tag name
+        type: string
+        default: v
+      initial-version:
+        description: Version used when the repository has no tags yet
+        type: string
+        default: 1.0.0
+      update-major-tag:
+        description: Also move a major version tag (e.g. v1) to the new release so callers can pin to a major version
+        type: boolean
+        default: true
+      dry-run:
+        description: Work out the next version without pushing any tags
+        type: boolean
+        default: false
+    outputs:
+      new-tag:
+        description: The tag created by this run (empty if nothing was tagged)
+        value: ${{ jobs.tag.outputs.new-tag }}
+      previous-tag:
+        description: The latest tag before this run (empty if there was none)
+        value: ${{ jobs.tag.outputs.previous-tag }}
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+
+    outputs:
+      new-tag: ${{ steps.version.outputs.new-tag }}
+      previous-tag: ${{ steps.version.outputs.previous-tag }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history and tags are needed to find the last version
+
+      - name: Calculate Next Version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          PREFIX: ${{ inputs.tag-prefix }}
+          INITIAL_VERSION: ${{ inputs.initial-version }}
+        run: |
+          set -euo pipefail
+
+          previous_tag=$(git tag --list "${PREFIX}[0-9]*.[0-9]*.[0-9]*" --sort=-v:refname | head -n 1)
+          echo "previous-tag=${previous_tag}" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$previous_tag" ]; then
+            new_version="$INITIAL_VERSION"
+            echo "No existing tags found, starting at ${new_version}."
+          else
+            if [ -n "$(git tag --points-at HEAD --list "${PREFIX}[0-9]*.[0-9]*.[0-9]*")" ]; then
+              echo "HEAD is already tagged, nothing to do."
+              echo "new-tag=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if [ "$BUMP" = "auto" ]; then
+              # +semver: none/skip on the latest commit skips tagging (same marker as GitVersion)
+              if git log -1 --format='%B' | grep -qE '\+semver:\s?(none|skip)'; then
+                echo "Latest commit is marked +semver: none/skip, nothing to do."
+                echo "new-tag=" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+
+              # Conventional Commits, GitVersion +semver: markers or #major/#minor in commit messages decide the bump; anything else is a patch
+              messages=$(git log "${previous_tag}..HEAD" --format='%s%n%b')
+              if echo "$messages" | grep -qE '^[a-z]+(\(.+\))?!:|BREAKING CHANGE|\+semver:\s?(breaking|major)|#major'; then
+                BUMP=major
+              elif echo "$messages" | grep -qE '^feat(\(.+\))?:|\+semver:\s?(feature|minor)|#minor'; then
+                BUMP=minor
+              else
+                BUMP=patch
+              fi
+            fi
+
+            IFS=. read -r major minor patch <<< "${previous_tag#"$PREFIX"}"
+            case "$BUMP" in
+              major) new_version="$((major + 1)).0.0" ;;
+              minor) new_version="${major}.$((minor + 1)).0" ;;
+              patch) new_version="${major}.${minor}.$((patch + 1))" ;;
+              *) echo "::error::Unknown bump '${BUMP}', expected auto, major, minor or patch."; exit 1 ;;
+            esac
+            echo "Bumping ${BUMP} version: ${previous_tag} -> ${PREFIX}${new_version}"
+          fi
+
+          echo "new-tag=${PREFIX}${new_version}" >> "$GITHUB_OUTPUT"
+          echo "major-tag=${PREFIX}${new_version%%.*}" >> "$GITHUB_OUTPUT"
+
+      - name: Push Tags
+        if: ${{ steps.version.outputs.new-tag != '' && !inputs.dry-run }}
+        env:
+          NEW_TAG: ${{ steps.version.outputs.new-tag }}
+          MAJOR_TAG: ${{ steps.version.outputs.major-tag }}
+          UPDATE_MAJOR_TAG: ${{ inputs.update-major-tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
+          git push origin "$NEW_TAG"
+
+          if [ "$UPDATE_MAJOR_TAG" = "true" ]; then
+            git tag -fa "$MAJOR_TAG" -m "Latest $MAJOR_TAG release ($NEW_TAG)"
+            git push origin "$MAJOR_TAG" --force
+          fi
+
+      - name: Summary
+        env:
+          NEW_TAG: ${{ steps.version.outputs.new-tag }}
+          PREVIOUS_TAG: ${{ steps.version.outputs.previous-tag }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          {
+            echo "### Tag Release"
+            echo "- Previous tag: ${PREVIOUS_TAG:-none}"
+            echo "- New tag: ${NEW_TAG:-none (HEAD already tagged)}"
+            [ "$DRY_RUN" = "true" ] && echo "- Dry run: no tags were pushed"
+          } >> "$GITHUB_STEP_SUMMARY"
