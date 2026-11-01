@@ -131,5 +131,7 @@ jobs:
             echo "### Tag Release"
             echo "- Previous tag: ${PREVIOUS_TAG:-none}"
             echo "- New tag: ${NEW_TAG:-none (HEAD already tagged)}"
-            [ "$DRY_RUN" = "true" ] && echo "- Dry run: no tags were pushed"
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "- Dry run: no tags were pushed"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
