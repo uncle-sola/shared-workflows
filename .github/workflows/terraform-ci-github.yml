@@ -103,7 +103,7 @@ jobs:
           STATE_RESOURCE_GROUP: ${{ inputs.state-resource-group }}
           STATE_STORAGE_ACCOUNT: ${{ inputs.state-storage-account }}
           STATE_CONTAINER: ${{ inputs.state-container }}
-          STATE_KEY: ${{ inputs.state-key || format('tf/{0}.{1}.tfstate', github.event.repository.name, inputs.environment) }}
+          STATE_KEY: ${{ inputs.state-key || format('tf/{0}.tfstate', github.event.repository.name) }}
         run: |
           if [ -n "$STATE_STORAGE_ACCOUNT" ]; then
             echo "Using azurerm backend: $STATE_STORAGE_ACCOUNT/$STATE_CONTAINER/$STATE_KEY"
