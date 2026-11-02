@@ -1,0 +1,94 @@
+name: Terraform Deploy
+
+on:
+  workflow_call:
+    inputs:
+      working-dir:
+        description: Directory containing the Terraform code
+        type: string
+        default: ./terraform
+      environment:
+        description: GitHub environment to deploy to
+        type: string
+        required: true
+      state-resource-group:
+        description: Resource group of the storage account holding Terraform state (azurerm backend)
+        type: string
+        required: true
+      state-storage-account:
+        description: Storage account holding Terraform state
+        type: string
+        required: true
+      state-container:
+        description: Blob container holding Terraform state
+        type: string
+        default: tfstates
+      state-key:
+        description: State file name. Defaults to tf/<repo name>.tfstate (the same default as terraform-ci-github.yml)
+        type: string
+        default: ""
+    secrets:
+      ARM_CLIENT_ID:
+        description: Azure service principal client ID (can also be set as a GitHub environment secret)
+        required: false
+      ARM_CLIENT_SECRET:
+        description: Azure service principal client secret (can also be set as a GitHub environment secret)
+        required: false
+      ARM_SUBSCRIPTION_ID:
+        description: Azure subscription ID (can also be set as a GitHub environment secret)
+        required: false
+      ARM_TENANT_ID:
+        description: Azure tenant ID (can also be set as a GitHub environment secret)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    # Never run two deployments to the same environment at once; queue them instead
+    concurrency:
+      group: terraform-deploy-${{ github.repository }}-${{ inputs.environment }}
+      cancel-in-progress: false
+
+    env:
+      TF_VAR_environment: ${{ inputs.environment }}
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-dir }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        env:
+          STATE_RESOURCE_GROUP: ${{ inputs.state-resource-group }}
+          STATE_STORAGE_ACCOUNT: ${{ inputs.state-storage-account }}
+          STATE_CONTAINER: ${{ inputs.state-container }}
+          STATE_KEY: ${{ inputs.state-key || format('tf/{0}.tfstate', github.event.repository.name) }}
+        run: |
+          echo "Using azurerm backend: $STATE_STORAGE_ACCOUNT/$STATE_CONTAINER/$STATE_KEY"
+          terraform init -input=false \
+            -backend-config="resource_group_name=$STATE_RESOURCE_GROUP" \
+            -backend-config="storage_account_name=$STATE_STORAGE_ACCOUNT" \
+            -backend-config="container_name=$STATE_CONTAINER" \
+            -backend-config="key=$STATE_KEY"
+
+      - name: Terraform Plan
+        run: terraform plan -input=false -no-color -out=tfplan
+
+      - name: Terraform Apply
+        run: terraform apply -input=false -no-color tfplan
