@@ -20,9 +20,13 @@ on:
         type: boolean
         default: true
       environment:
-        description: GitHub environment to deploy to
+        description: Environment name passed to Terraform as TF_VAR_environment (also the GitHub environment unless plan-environment is set)
         type: string
         required: true
+      plan-environment:
+        description: GitHub environment the job runs in, e.g. one with the same secrets but no required reviewers. Defaults to environment.
+        type: string
+        default: ""
       state-resource-group:
         description: Resource group of the storage account holding Terraform state (azurerm backend)
         type: string
@@ -36,7 +40,7 @@ on:
         type: string
         default: tfstates
       state-key:
-        description: State file name. Defaults to tf/<repo name>.<environment>.tfstate
+        description: State file name. Defaults to tf/<repo name>.tfstate
         type: string
         default: ""
     secrets:
@@ -75,7 +79,7 @@ jobs:
 
   terraform:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.plan-environment || inputs.environment }}
     env:
       TF_VAR_environment: ${{ inputs.environment }}
       # Azure credentials are needed by init (to reach the state backend) as well as by plan

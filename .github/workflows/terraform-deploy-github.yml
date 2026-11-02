@@ -8,15 +8,19 @@ on:
         type: string
         default: ./terraform
       environment:
-        description: GitHub environment to deploy to
+        description: GitHub environment to deploy to (used by the apply job, so its approval rules gate the apply)
         type: string
         required: true
+      plan-environment:
+        description: GitHub environment used by the plan job, e.g. one with the same secrets but no required reviewers. Defaults to environment.
+        type: string
+        default: ""
       state-resource-group:
-        description: Resource group of the storage account holding Terraform state (azurerm backend)
+        description: Resource group of the storage account holding Terraform state (azurerm backend) and saved plans
         type: string
         required: true
       state-storage-account:
-        description: Storage account holding Terraform state
+        description: Storage account holding Terraform state and saved plans
         type: string
         required: true
       state-container:
@@ -25,6 +29,14 @@ on:
         default: tfstates
       state-key:
         description: State file name. Defaults to tf/<repo name>.tfstate (the same default as terraform-ci-github.yml)
+        type: string
+        default: ""
+      plan-container:
+        description: Blob container the saved plan is uploaded to and downloaded from
+        type: string
+        default: tfplan
+      plan-name:
+        description: Project name used in the plan file name (plan_<name>_<run id>_<attempt>.tfplan). Defaults to the repo name.
         type: string
         default: ""
     secrets:
@@ -44,23 +56,35 @@ on:
 permissions:
   contents: read
 
+# Never run two deployments to the same environment at once; queue them instead
+concurrency:
+  group: terraform-deploy-${{ github.repository }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  TF_VAR_environment: ${{ inputs.environment }}
+  STATE_RESOURCE_GROUP: ${{ inputs.state-resource-group }}
+  STATE_STORAGE_ACCOUNT: ${{ inputs.state-storage-account }}
+  STATE_CONTAINER: ${{ inputs.state-container }}
+  STATE_KEY: ${{ inputs.state-key || format('tf/{0}.tfstate', github.event.repository.name) }}
+  PLAN_CONTAINER: ${{ inputs.plan-container }}
+
 jobs:
 
-  deploy:
+  plan:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
-
-    # Never run two deployments to the same environment at once; queue them instead
-    concurrency:
-      group: terraform-deploy-${{ github.repository }}-${{ inputs.environment }}
-      cancel-in-progress: false
+    environment: ${{ inputs.plan-environment || inputs.environment }}
 
     env:
-      TF_VAR_environment: ${{ inputs.environment }}
       ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
       ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
       ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      PLAN_BLOB: plan_${{ inputs.plan-name || github.event.repository.name }}_${{ github.run_id }}_${{ github.run_attempt }}.tfplan
+
+    outputs:
+      has-changes: ${{ steps.plan.outputs.has-changes }}
+      plan-blob: ${{ env.PLAN_BLOB }}
 
     defaults:
       run:
@@ -72,13 +96,10 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false  # So -detailed-exitcode reaches the shell unchanged
 
       - name: Terraform Init
-        env:
-          STATE_RESOURCE_GROUP: ${{ inputs.state-resource-group }}
-          STATE_STORAGE_ACCOUNT: ${{ inputs.state-storage-account }}
-          STATE_CONTAINER: ${{ inputs.state-container }}
-          STATE_KEY: ${{ inputs.state-key || format('tf/{0}.tfstate', github.event.repository.name) }}
         run: |
           echo "Using azurerm backend: $STATE_STORAGE_ACCOUNT/$STATE_CONTAINER/$STATE_KEY"
           terraform init -input=false \
@@ -88,7 +109,83 @@ jobs:
             -backend-config="key=$STATE_KEY"
 
       - name: Terraform Plan
-        run: terraform plan -input=false -no-color -out=tfplan
+        id: plan
+        run: |
+          # -detailed-exitcode: 0 = no changes, 1 = error, 2 = changes to apply
+          set +e
+          terraform plan -input=false -no-color -detailed-exitcode -out=tfplan
+          code=$?
+          set -e
+          if [ "$code" -eq 1 ]; then exit 1; fi
+          if [ "$code" -eq 2 ]; then
+            echo "has-changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-changes=false" >> "$GITHUB_OUTPUT"
+            echo "No changes to apply."
+          fi
+
+      - name: Azure Login
+        if: steps.plan.outputs.has-changes == 'true'
+        run: |
+          az login --service-principal --username "$ARM_CLIENT_ID" --password "$ARM_CLIENT_SECRET" --tenant "$ARM_TENANT_ID" --output none
+          az account set --subscription "$ARM_SUBSCRIPTION_ID"
+
+      - name: Upload Plan
+        if: steps.plan.outputs.has-changes == 'true'
+        run: |
+          echo "Uploading plan to $STATE_STORAGE_ACCOUNT/$PLAN_CONTAINER/$PLAN_BLOB"
+          az storage blob upload --auth-mode key --only-show-errors --output none \
+            --account-name "$STATE_STORAGE_ACCOUNT" \
+            --container-name "$PLAN_CONTAINER" \
+            --name "$PLAN_BLOB" \
+            --file tfplan
+
+  apply:
+    needs: plan
+    if: needs.plan.outputs.has-changes == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    env:
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      PLAN_BLOB: ${{ needs.plan.outputs.plan-blob }}
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-dir }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4  # Same commit as the plan job, so the code matches the saved plan
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        run: |
+          echo "Using azurerm backend: $STATE_STORAGE_ACCOUNT/$STATE_CONTAINER/$STATE_KEY"
+          terraform init -input=false \
+            -backend-config="resource_group_name=$STATE_RESOURCE_GROUP" \
+            -backend-config="storage_account_name=$STATE_STORAGE_ACCOUNT" \
+            -backend-config="container_name=$STATE_CONTAINER" \
+            -backend-config="key=$STATE_KEY"
+
+      - name: Azure Login
+        run: |
+          az login --service-principal --username "$ARM_CLIENT_ID" --password "$ARM_CLIENT_SECRET" --tenant "$ARM_TENANT_ID" --output none
+          az account set --subscription "$ARM_SUBSCRIPTION_ID"
+
+      - name: Download Plan
+        run: |
+          echo "Downloading plan from $STATE_STORAGE_ACCOUNT/$PLAN_CONTAINER/$PLAN_BLOB"
+          az storage blob download --auth-mode key --only-show-errors --output none \
+            --account-name "$STATE_STORAGE_ACCOUNT" \
+            --container-name "$PLAN_CONTAINER" \
+            --name "$PLAN_BLOB" \
+            --file tfplan
 
       - name: Terraform Apply
         run: terraform apply -input=false -no-color tfplan
