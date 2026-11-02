@@ -16,7 +16,7 @@ on:
         type: string
         default: ""
       state-key:
-        description: State file name. Defaults to tf/<repo name>.tfstate (the same default as terraform-ci-github.yml)
+        description: State file name. Defaults to tf/<repo name>.tfstate (the same default as terraform-pr-github.yml)
         type: string
         default: ""
       plan-container:
