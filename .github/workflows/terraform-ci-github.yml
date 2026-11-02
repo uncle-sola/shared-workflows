@@ -27,26 +27,11 @@ on:
         description: GitHub environment the job runs in, e.g. one with the same secrets but no required reviewers. Defaults to environment.
         type: string
         default: ""
-      state-resource-group:
-        description: Resource group of the storage account holding Terraform state (azurerm backend)
-        type: string
-        default: ""
-      state-storage-account:
-        description: Storage account holding Terraform state. Leave empty to run without the azurerm backend.
-        type: string
-        default: ""
-      state-container:
-        description: Blob container holding Terraform state
-        type: string
-        default: tfstates
       state-key:
         description: State file name. Defaults to tf/<repo name>.tfstate
         type: string
         default: ""
     secrets:
-      TF_API_TOKEN:
-        description: Terraform Cloud API token
-        required: false
       CLAUDE_API_KEY:
         description: Claude API key used by the AI review
         required: false
@@ -104,9 +89,10 @@ jobs:
 
       - name: Terraform Init
         env:
-          STATE_RESOURCE_GROUP: ${{ inputs.state-resource-group }}
-          STATE_STORAGE_ACCOUNT: ${{ inputs.state-storage-account }}
-          STATE_CONTAINER: ${{ inputs.state-container }}
+          # From the variables set on the job's GitHub environment; no STATE_STORAGE_ACCOUNT means no azurerm backend
+          STATE_RESOURCE_GROUP: ${{ vars.STATE_RESOURCE_GROUP }}
+          STATE_STORAGE_ACCOUNT: ${{ vars.STATE_STORAGE_ACCOUNT }}
+          STATE_CONTAINER: ${{ vars.STATE_CONTAINER || 'tfstates' }}
           STATE_KEY: ${{ inputs.state-key || format('tf/{0}.tfstate', github.event.repository.name) }}
         run: |
           if [ -n "$STATE_STORAGE_ACCOUNT" ]; then

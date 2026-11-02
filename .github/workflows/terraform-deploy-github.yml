@@ -15,18 +15,6 @@ on:
         description: GitHub environment used by the plan job, e.g. one with the same secrets but no required reviewers. Defaults to environment.
         type: string
         default: ""
-      state-resource-group:
-        description: Resource group of the storage account holding Terraform state (azurerm backend) and saved plans
-        type: string
-        required: true
-      state-storage-account:
-        description: Storage account holding Terraform state and saved plans
-        type: string
-        required: true
-      state-container:
-        description: Blob container holding Terraform state
-        type: string
-        default: tfstates
       state-key:
         description: State file name. Defaults to tf/<repo name>.tfstate (the same default as terraform-ci-github.yml)
         type: string
@@ -61,11 +49,10 @@ concurrency:
   group: terraform-deploy-${{ github.repository }}-${{ inputs.environment }}
   cancel-in-progress: false
 
+# STATE_RESOURCE_GROUP, STATE_STORAGE_ACCOUNT and STATE_CONTAINER are set per job, because
+# GitHub environment variables (vars.*) only resolve inside a job that declares the environment
 env:
   TF_VAR_environment: ${{ inputs.environment }}
-  STATE_RESOURCE_GROUP: ${{ inputs.state-resource-group }}
-  STATE_STORAGE_ACCOUNT: ${{ inputs.state-storage-account }}
-  STATE_CONTAINER: ${{ inputs.state-container }}
   STATE_KEY: ${{ inputs.state-key || format('tf/{0}.tfstate', github.event.repository.name) }}
   PLAN_CONTAINER: ${{ inputs.plan-container }}
 
@@ -80,6 +67,9 @@ jobs:
       ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
       ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      STATE_RESOURCE_GROUP: ${{ vars.STATE_RESOURCE_GROUP }}
+      STATE_STORAGE_ACCOUNT: ${{ vars.STATE_STORAGE_ACCOUNT }}
+      STATE_CONTAINER: ${{ vars.STATE_CONTAINER || 'tfstates' }}
       PLAN_BLOB: plan_${{ inputs.plan-name || github.event.repository.name }}_${{ github.run_id }}_${{ github.run_attempt }}.tfplan
 
     outputs:
@@ -101,6 +91,8 @@ jobs:
 
       - name: Terraform Init
         run: |
+          : "${STATE_RESOURCE_GROUP:?Set the STATE_RESOURCE_GROUP variable on the GitHub environment}"
+          : "${STATE_STORAGE_ACCOUNT:?Set the STATE_STORAGE_ACCOUNT variable on the GitHub environment}"
           echo "Using azurerm backend: $STATE_STORAGE_ACCOUNT/$STATE_CONTAINER/$STATE_KEY"
           terraform init -input=false \
             -backend-config="resource_group_name=$STATE_RESOURCE_GROUP" \
@@ -151,6 +143,9 @@ jobs:
       ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
       ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      STATE_RESOURCE_GROUP: ${{ vars.STATE_RESOURCE_GROUP }}
+      STATE_STORAGE_ACCOUNT: ${{ vars.STATE_STORAGE_ACCOUNT }}
+      STATE_CONTAINER: ${{ vars.STATE_CONTAINER || 'tfstates' }}
       PLAN_BLOB: ${{ needs.plan.outputs.plan-blob }}
 
     defaults:
@@ -166,6 +161,8 @@ jobs:
 
       - name: Terraform Init
         run: |
+          : "${STATE_RESOURCE_GROUP:?Set the STATE_RESOURCE_GROUP variable on the GitHub environment}"
+          : "${STATE_STORAGE_ACCOUNT:?Set the STATE_STORAGE_ACCOUNT variable on the GitHub environment}"
           echo "Using azurerm backend: $STATE_STORAGE_ACCOUNT/$STATE_CONTAINER/$STATE_KEY"
           terraform init -input=false \
             -backend-config="resource_group_name=$STATE_RESOURCE_GROUP" \
