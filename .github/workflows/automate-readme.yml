@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest  # Run the workflow on an Ubuntu runner
 
     steps:
-      - uses: actions/checkout@v3  # Checkout the repository code
+      - uses: actions/checkout@v7  # Checkout the repository code
         with:
           ref: ${{ github.head_ref || github.ref_name }}  # Check out the real branch (not the PR merge commit) so docs can be pushed
 
